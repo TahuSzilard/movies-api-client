@@ -4,7 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
-
+use Barryvdh\DomPDF\Facade\Pdf;
 class ActorController extends Controller
 {
     protected $token;
@@ -18,28 +18,39 @@ class ActorController extends Controller
     public function index(Request $request)
     {
         $needle = $request->get('needle');
+        $errorMessage = null;
+        $actors = [];
 
         try {
-            $url = $needle ? "actors?needle=" . urlencode($needle) : "actors";
-            $response = Http::api()->get($url);
+            $response = Http::api()->get('actors');
 
             if ($response->failed()) {
-                $message = $response->json('message') ?? 'Hiba történt a színészek lekérdezésekor.';
-                return redirect()->route('actors.index')->with('error', $message);
+                $errorMessage = $response->json('message') ?? 'Hiba történt a színészek lekérdezésekor.';
+            } else {
+                $actors = $response->json()['actors'] ?? [];
             }
 
-            $actors = $response->json()['actors'] ?? [];
-
-            return view('actors.index', [
-                'entities' => $actors,
-                'isAuthenticated' => $this->token !== null,
-            ]);
-
         } catch (\Exception $e) {
-            return redirect()->route('actors.index')
-                ->with('error', "Nem sikerült betölteni a színészeket: " . $e->getMessage());
+            $errorMessage = "Nem sikerült betölteni a színészeket: " . $e->getMessage();
         }
+
+        // Keresés (csak ha vannak adatok)
+        if ($needle && !empty($actors)) {
+            $needleLower = mb_strtolower($needle);
+            $actors = array_filter($actors, function ($actor) use ($needleLower) {
+                return strpos(mb_strtolower($actor['name'] ?? ''), $needleLower) !== false;
+            });
+            $actors = array_values($actors);
+        }
+
+        return view('actors.index', [
+            'entities'       => $actors,
+            'isAuthenticated'=> $this->token !== null,
+            'errorMessage'   => $errorMessage,
+        ]);
     }
+
+    
 
     // Egy színész adatainak megtekintése
     public function show($id)
@@ -75,30 +86,36 @@ class ActorController extends Controller
 
 
     // Új színész mentése
-    public function store(Request $request)
-    {
-        $request->validate([
-            'name' => 'required|string|max:255',
+// Új színész mentése
+public function store(Request $request)
+{
+    // Validáció: name kötelező, image opcionális
+    $request->validate([
+        'name' => 'required|string|max:255',
+    ]);
+
+    try {
+        // POST request az API felé
+        $response = Http::api()->withToken($this->token)->post('/actors', [
+            'name' => $request->name,
         ]);
 
-        try {
-            $response = Http::api()->withToken($this->token)->post('/actors', [
-                'name' => $request->name,
-            ]);
-
-            if ($response->failed()) {
-                $message = $response->json('message') ?? 'Nem sikerült létrehozni a színészt.';
-                return redirect()->route('actors.index')->with('error', $message);
-            }
-
-            return redirect()->route('actors.index')
-                ->with('success', "{$request->name} színész sikeresen létrehozva!");
-
-        } catch (\Exception $e) {
-            return redirect()->route('actors.index')
-                ->with('error', "Nem sikerült kommunikálni az API-val: " . $e->getMessage());
+        if ($response->failed()) {
+            $message = $response->json('message') ?? 'Nem sikerült létrehozni a színészt.';
+            return redirect()->route('actors.index')->with('error', $message);
         }
+
+        $actorName = $response->json('actor.name') ?? $request->name;
+
+        return redirect()->route('actors.index')
+            ->with('success', "$actorName színész sikeresen létrehozva!");
+
+    } catch (\Exception $e) {
+        return redirect()->route('actors.index')
+            ->with('error', "Nem sikerült kommunikálni az API-val: " . $e->getMessage());
     }
+}
+
 
 
 
@@ -175,4 +192,53 @@ class ActorController extends Controller
                 ->with('error', "Nem sikerült kommunikálni az API-val: " . $e->getMessage());
         }
     }
+    public function exportCsv()
+    {
+        $response = Http::api()->get('actors');
+        $actors = $response->json()['actors'] ?? [];
+
+        $filename = "actors_" . date('Y-m-d') . ".csv";
+
+        $headers = [
+            "Content-type" => "text/csv",
+            "Content-Disposition" => "attachment; filename=$filename",
+        ];
+
+        $columns = ['ID', 'Név', 'Kép', 'Létrehozva', 'Frissítve'];
+
+        $callback = function() use ($actors, $columns) {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, $columns);
+
+            foreach ($actors as $actor) {
+                fputcsv($file, [
+                    $actor['id'],
+                    $actor['name'],
+                    $actor['image'],
+                    $actor['created_at'],
+                    $actor['updated_at'],
+                ]);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+    public function exportPdf()
+    {
+        $response = Http::api()->get('actors');
+        $data = $response->json()['actors'] ?? [];
+
+        $pdf = Pdf::loadView('exports.actors_pdf', [
+            'title' => 'Színészek listája',
+            'columns' => ['ID', 'Név', 'Kép', 'Létrehozva', 'Frissítve'],
+            'fields' => ['id','name','image','created_at','updated_at'],
+            'items' => $data,
+            'logo' => 'https://img.freepik.com/premium-vector/laravel-programming-framework-logo-vector-available-ai-8-regular-version_1076780-22054.jpg',
+        ]);
+
+        return $pdf->download('actors.pdf');
+    }
+
 }

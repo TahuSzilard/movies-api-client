@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
+use Barryvdh\DomPDF\Facade\Pdf;
 
 class DirectorController extends Controller
 {
@@ -16,23 +17,32 @@ class DirectorController extends Controller
 
     public function index(Request $request)
     {
+        $needle = $request->get('needle'); // Kereső kifejezés
+    
         try {
+            // Lekérjük az összes rendezőt az API-tól
             $response = Http::api()->get('/directors');
-
             if ($response->failed()) {
                 return view('directors.index', [
                     'entities' => [],
                     'isAuthenticated' => $this->isAuthenticated()
                 ])->with('error', 'Nem sikerült lekérni a rendezőket.');
             }
-
+    
             $directors = $response->json()['directors'] ?? [];
-
+    
+            // Ha van kereső kifejezés, szűrjük a rendezőket a név alapján (case-insensitive)
+            if ($needle) {
+                $directors = collect($directors)->filter(function ($director) use ($needle) {
+                    return stripos($director['name'], $needle) !== false;
+                })->values()->all();
+            }
+    
             return view('directors.index', [
                 'entities' => $directors,
                 'isAuthenticated' => $this->isAuthenticated()
             ]);
-
+    
         } catch (\Exception $e) {
             return view('directors.index', [
                 'entities' => [],
@@ -40,6 +50,7 @@ class DirectorController extends Controller
             ])->with('error', 'API kommunikációs hiba: ' . $e->getMessage());
         }
     }
+    
 
     public function show($id)
     {
@@ -191,4 +202,53 @@ class DirectorController extends Controller
     {
         return !empty($this->token);
     }
+    public function exportCsv()
+    {
+        $response = Http::api()->get('directors');
+        $directors = $response->json()['directors'] ?? [];
+
+        $filename = "directors_" . date('Y-m-d') . ".csv";
+
+        $headers = [
+            "Content-type" => "text/csv",
+            "Content-Disposition" => "attachment; filename=$filename",
+        ];
+
+        $columns = ['ID', 'Név', 'Létrehozva', 'Frissítve'];
+
+        $callback = function() use ($directors, $columns) {
+            $file = fopen('php://output', 'w');
+            fputcsv($file, $columns);
+
+            foreach ($directors as $director) {
+                fputcsv($file, [
+                    $director['id'],
+                    $director['name'],
+                    $director['created_at'],
+                    $director['updated_at'],
+                ]);
+            }
+
+            fclose($file);
+        };
+
+        return response()->stream($callback, 200, $headers);
+    }
+    public function exportPdf()
+    {
+        $response = Http::api()->get('directors');
+        $data = $response->json()['directors'] ?? [];
+
+        $pdf = Pdf::loadView('exports.directors_pdf', [
+            'title' => 'Rendezők listája',
+            'columns' => ['ID','Név','Létrehozva','Frissítve'],
+            'fields' => ['id','name','created_at','updated_at'],
+            'items' => $data,
+            'logo' => 'https://img.freepik.com/premium-vector/laravel-programming-framework-logo-vector-available-ai-8-regular-version_1076780-22054.jpg',
+        ]);
+
+        return $pdf->download('directors.pdf');
+    }
+
+
 }

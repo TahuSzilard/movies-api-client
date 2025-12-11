@@ -39,7 +39,10 @@
             <label for="description" class="form-label">Leírás</label>
             <textarea name="description" id="description" class="form-control">{{ old('description') }}</textarea>
         </div>
-
+        <div class="mb-3">
+            <label for="image" class="form-label">Kép URL</label>
+            <input type="text" name="image" id="image" class="form-control" value="{{ old('image') }}" required>
+        </div>
         <button class="btn btn-success">Mentés</button>
         <a href="{{ route('films.index') }}" class="btn btn-secondary">Mégse</a>
     </form>
